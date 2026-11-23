@@ -5,12 +5,12 @@ import * as voice from './voice.js';
 import { keepAwake } from './awake.js';
 import * as mapx from './map.js';
 import { speedChart, barChart } from './chart.js';
-import { exportGpx, exportBackup, importBackup } from './files.js';
+import { exportGpx, exportBackup, importBackup, importGpxFiles } from './files.js';
 import * as stats from './stats.js';
 import { icons } from './icons.js';
 import { $, el, fmtKm, fmtDur, fmtSpeed, fmtNum, fmtDate, fmtTime, fmtWeekday, durWords, plural, MONTHS_NOM, monthStart } from './util.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const tracker = new Tracker();
 let settings = { ...db.DEFAULTS };
 let recovery = false;            // есть незаконченная поездка, ждём решения
@@ -129,6 +129,7 @@ async function renderHome() {
         el('button', { class: 'btn btn--ghost btn--danger btn--block', onclick: async () => { recovery = false; await tracker.discard(); render(); } }, icon('trash'), 'Удалить запись'))));
   } else {
     parts.push(el('button', { class: 'btn btn--accent start-btn', onclick: () => startFlow(false) }, icon('play'), 'СТАРТ', el('small', {}, 'Экран будет оставаться включённым')));
+    parts.push(importGpxButton('btn btn--ghost btn--block'));
   }
 
   const rides = await db.ridesSummary();
@@ -154,6 +155,41 @@ function rideRow(r) {
       el('div', { class: 'title' }, r.name),
       el('div', { class: 'meta' }, `${fmtWeekday(r.start)}, ${fmtDate(r.start)}, ${fmtTime(r.start)} · ${fmtDur(r.moving)} · ${fmtSpeed(r.avg)} км/ч`)),
     el('div', { class: 'km num' }, fmtKm(r.dist, 1), el('span', { class: 'tile__u' }, 'км')));
+}
+
+// ═════════════ Импорт GPX ═════════════
+// Safari на iPhone не даёт сайту читать папку самому — файлы выбираются вручную.
+// Дубли пропускаются, поэтому можно каждый раз выделять всю папку целиком.
+
+function importGpxButton(cls = 'btn btn--block') {
+  return el('button', { class: cls, onclick: pickGpx }, icon('upload'), 'Загрузить треки GPX');
+}
+
+function pickGpx() {
+  // Без accept: iOS не знает тип .gpx и иначе может сделать файлы серыми.
+  const input = el('input', { type: 'file', multiple: true, class: 'hidden' });
+  input.onchange = async () => {
+    const files = Array.from(input.files || []);
+    input.remove();
+    if (!files.length) return;
+    toast('Читаю треки…');
+    try {
+      const r = await importGpxFiles(files, settings);
+      const n = r.added.length;
+      const msg = [];
+      msg.push(n ? `Добавил ${n} ${plural(n, 'поездку', 'поездки', 'поездок')}` : 'Новых поездок нет');
+      if (r.dup) msg.push(`уже были: ${r.dup}`);
+      if (r.short) msg.push(`слишком короткие: ${r.short}`);
+      if (r.bad.length) msg.push(`не GPX: ${r.bad.join(', ')}`);
+      toast(msg.join(' · '), 5000);
+      if (n === 1) location.hash = '#/ride/' + r.added[0].id;
+      else render();
+    } catch (e) {
+      toast('Не получилось: ' + e.message, 5000);
+    }
+  };
+  document.body.append(input);
+  input.click();
 }
 
 // ═════════════ Запись поездки ═════════════
@@ -341,7 +377,9 @@ async function renderHistory() {
   setTop('История');
   const rides = await db.ridesSummary();
   if (!rides.length) {
-    view.append(el('div', { class: 'card empty' }, el('b', {}, 'Поездок пока нет'), 'Здесь появятся все ваши заезды: карта, графики скорости, отрезки. ', el('a', { href: '#/' }, 'Начать первую →')));
+    view.append(el('div', { class: 'stack' },
+      el('div', { class: 'card empty' }, el('b', {}, 'Поездок пока нет'), 'Здесь появятся все ваши заезды: карта, графики скорости, отрезки. ', el('a', { href: '#/' }, 'Начать первую →')),
+      importGpxButton('btn btn--ghost btn--block')));
     return;
   }
   const groups = new Map();
@@ -350,7 +388,7 @@ async function renderHistory() {
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(r);
   }
-  const out = [];
+  const out = [importGpxButton('btn btn--ghost btn--block')];
   for (const [k, list] of groups) {
     const d = new Date(k);
     const t = stats.totals(list);

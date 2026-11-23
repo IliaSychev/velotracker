@@ -3,7 +3,7 @@
 // кнопке в настройках и хранится в своём кэше (velo-map-v1).
 // При изменении файлов приложения увеличьте VERSION.
 
-const VERSION = 'v1.0.0';
+const VERSION = 'v1.1.0';
 const APP_CACHE = 'velo-app-' + VERSION;
 
 const FONTS = ['Noto Sans Regular', 'Noto Sans Medium', 'Noto Sans Italic'].flatMap((f) =>

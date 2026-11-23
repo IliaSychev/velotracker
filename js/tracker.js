@@ -20,14 +20,16 @@ const NO_GPS_MS = 15000;     // нет точек дольше — «сигна�
 export const T = { DIST: 4, MOV: 5, SEG: 6, SPD: 3 };
 
 export class Tracker extends EventTarget {
-  constructor() {
+  constructor({ replay = false } = {}) {
     super();
+    this.replay = replay;     // пересчёт готового трека (импорт GPX): без GPS, базы и таймеров
+    this.gapSec = GAP_SEC;
     this.settings = { ...db.DEFAULTS };
     this.reset();
     this.watchId = null;
     this.gps = { acc: null, at: 0, lost: false };
     this.sim = null;
-    setInterval(() => this.checkGps(), 3000);
+    if (!replay) setInterval(() => this.checkGps(), 3000);
   }
 
   reset() {
@@ -101,7 +103,7 @@ export class Tracker extends EventTarget {
     if (dt < 0.5) return;
     const d = haversine(this.last.lat, this.last.lon, cur.lat, cur.lon);
 
-    if (dt > GAP_SEC) {               // долго не было сигнала — новый сегмент
+    if (dt > this.gapSec) {               // долго не было сигнала — новый сегмент
       this.last = cur;
       this.speedBuf = [];
       this.speed = 0;
@@ -155,7 +157,7 @@ export class Tracker extends EventTarget {
   addPoint(cur, speed, seg) {
     const p = [cur.t, +cur.lat.toFixed(6), +cur.lon.toFixed(6), Math.round(speed * 10) / 10, Math.round(this.dist), Math.round(this.moving * 10) / 10, seg];
     this.points.push(p);
-    db.liveAdd(p).catch(() => {});
+    if (!this.replay) db.liveAdd(p).catch(() => {});
     this.emit('point', p);
   }
 
@@ -239,7 +241,7 @@ export class Tracker extends EventTarget {
   // ───────── Восстановление после закрытия ─────────
 
   saveState() {
-    if (this.status === 'idle') return;
+    if (this.status === 'idle' || this.replay) return;
     const { id, start, dist, moving, maxSpeed, kcal, laps, lapStartDist, lapStartMoving, nextVoiceKm } = this;
     db.kvSet('active', {
       id, start, dist, moving, maxSpeed, kcal, laps, lapStartDist, lapStartMoving, nextVoiceKm,
@@ -310,6 +312,41 @@ function buildRide(tr) {
     efforts: bestEfforts(points),
     points,
   };
+}
+
+// ───────── Поездка из готового трека (импорт GPX) ─────────
+
+/**
+ * Прогнать точки чужого трека через тот же фильтр, автопаузу и отрезки,
+ * что и живую запись. segs — массив сегментов [{t, lat, lon, speed?}].
+ * Между сегментами — как ручная пауза: время и дистанция не считаются.
+ */
+export function rideFromTrack(segs, settings, extra = {}) {
+  const tr = new Tracker({ replay: true });
+  tr.settings = { ...db.DEFAULTS, ...settings };
+  tr.gapSec = 120;   // приложения в фоне пишут реже — короткие провалы не рвут трек
+  segs = segs.filter((s) => s.length);
+  if (!segs.length) return null;
+  tr.start = segs[0][0].t;
+  tr.id = 'g' + tr.start;
+  tr.status = 'recording';
+  for (const seg of segs) {
+    tr.last = null;
+    tr.speedBuf = [];
+    tr.slowSince = null;
+    tr.autoPaused = false;
+    tr.speed = 0;
+    for (const p of seg) {
+      tr.onFix({ timestamp: p.t, coords: { latitude: p.lat, longitude: p.lon, accuracy: 10, speed: p.speed ?? null } });
+    }
+    tr.elapsed += seg.at(-1).t - seg[0].t;
+  }
+  if (tr.dist - tr.lapStartDist >= 50 && tr.laps.length) {
+    const lap = tr.closeLap(false);
+    if (lap) lap.finish = true;
+  }
+  if (tr.dist < 50) return null;
+  return { ...buildRide(tr), ...extra };
 }
 
 // ───────── Симулятор для проверки без велосипеда: ?sim=1 (или ?sim=5 — в 5 раз быстрее) ─────────
